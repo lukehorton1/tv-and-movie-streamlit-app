@@ -1,0 +1,16 @@
+# .gitignore
+
+# Streamlit secrets file (crucial to protect - includes API key)
+.streamlit/secrets.toml
+
+
+
+# Other common Python/Streamlit files to ignore
+__pycache__/
+*.pyc
+venv/
+.venv/
+# Conda files
+.conda/
+conda-meta/
+env/
