@@ -1,39 +1,14 @@
 import pandas as pd
 import streamlit as st
-import streamlit_antd_components as sac
 from themoviedb import TMDb
 import time
 from datetime import date
 
-# gets API key for TMDB (The Movie Database)from Streamlit secrets
-api_key = st.secrets["TMDB_API_KEY"]
+# gets API key for TMDB (The Movie Database) from Streamlit secrets
+api_key = st.secrets["TMDB_API_KEY"] # enter this yourself in a secrets.toml file in the .streamlit folder
 
 ## Initialize TMDb with the API key
 tmdb = TMDb(key=api_key, language='en-GB', region='GB')
-
-#%% Get a list of top rated movies (sync mode)
-
-# movies = tmdb.movies().top_rated()
-# for movie in movies:
-#     print(movie)
-
-#%% Discover movies by different types of data.
-
-# movies = tmdb.discover().movie(
-#     sort_by="vote_average.desc",
-#     primary_release_date__gte="1997-08-15",
-#     vote_count__gte=10000,
-#     vote_average__gte=6.0,
-# ) 
-
-# # Create a DataFrame to store movie details
-# movie_details_df = pd.DataFrame(columns=['Title', 'Overview'])
-
-# # Loop through the first 10 movies and get details and add to dataframe 
-# for movie in range(10):
-#     movie_details = tmdb.movie(movie.id).details()
-#     movie_details_df.loc[len(movie_details_df)] = [movie_details.title, movie_details.overview]
- 
 
 #%% Movie search function:
 
@@ -117,7 +92,7 @@ def single_search(search_term="Jack", search_type="movie"):
 #%% Top movies by genre
 
 # Get and cache a list of genre IDs from TMDb and create a dict for mapping genre names to IDs
-st.cache_data(ttl=3600)  # Cache for 1 hour
+@st.cache_data(ttl=3600)  # Cache for 1 hour
 def get_genre_map(reverse=False):
     if reverse == False:
         genre_map = dict((g.name, g.id) for g in tmdb.genres().movie().genres)
@@ -129,6 +104,39 @@ def get_genre_map(reverse=False):
 genre_name_to_id = get_genre_map()
 genre_id_to_name = get_genre_map(reverse=True)
 
+# Get and cache a dict of regions from tmdb which have watch provider data (GB: United Kingdom)
+@st.cache_data(ttl=3600) # Cache for 1 hour
+def get_region_map(reverse=False):
+    if reverse == False:
+        region_map = dict((r.native_name, r.iso_3166_1) for r in tmdb.watch_providers().regions())
+    else:
+        region_map = dict((r.iso_3166_1, r.native_name) for r in tmdb.watch_providers().regions())
+    return region_map
+
+region_name_to_id = get_region_map()
+region_id_to_name = get_region_map(reverse=True)
+
+# Get a list of watch providers for a given region and create a mapping dict
+def get_provider_map(region="GB", type="movie", display_priority=25, reverse=False): 
+    # display priority is tmdb's score for how high to display the provider, and top_n is how many providers are returned
+    if type=="movie":
+        if reverse == False:
+            provider_map = dict((p.provider_name, p.provider_id) for p in tmdb.watch_providers().movie(watch_region=region) if p.display_priority <= display_priority)
+        else:
+            provider_map = dict((p.provider_id, p.provider_name) for p in tmdb.watch_providers().movie(watch_region=region) if p.display_priority <= display_priority)
+    elif type=="tv":
+        if reverse == False:
+            provider_map = dict((p.provider_name, p.provider_id) for p in tmdb.watch_providers().tv(watch_region=region) if p.display_priority <= display_priority)
+        else:
+            provider_map = dict((p.provider_id, p.provider_name) for p in tmdb.watch_providers().tv(watch_region=region) if p.display_priority <= display_priority)
+    else:
+        return "Please pass 'movie' or 'tv' to type parameter."
+    return provider_map
+
+provider_name_to_id = get_provider_map()
+provider_id_to_name = get_provider_map(reverse=True)
+
+@st.cache_data(ttl=3600) # Cache for 1 hour - cache's where to watch for each movie.id, so if the same movie appears in a separate search, it will hit the cache rather than requiring another API call.
 def where_to_watch(tmdb_id, region='GB'):
     providers = (tmdb.movie(tmdb_id) # searches on given tmdb id e.g. 5255
                  .watch_providers() # gets watch providers 
@@ -155,7 +163,10 @@ def top_movies_by_genre(genre=['Action', 'Drama'],
                         primary_release_date__gte="1997-08-15",
                         primary_release_date__lte="2025-12-31",
                         vote_count__gte=10000,
-                        get_watch_providers=True # defaults to False due to slow 20s API call
+                        get_watch_providers=False, # defaults to False due to slow 20s API call
+                        watch_region = None,
+                        watch_providers = None, # e.g. 8 for netflix. 
+                        page=1
                         ): 
     
     genre_ids = [str(genre_name_to_id[g]) for g in genre if g in genre_name_to_id]
@@ -175,7 +186,9 @@ def top_movies_by_genre(genre=['Action', 'Drama'],
         vote_count__gte=vote_count__gte,
         with_genres=genre_string,
         with_keywords=keyword,
-        with_people=people
+        with_people=people,
+        watch_region=watch_region,
+        with_watch_providers=watch_providers
     )
 
     # Create a DataFrame to store movie details
@@ -263,10 +276,11 @@ st.set_page_config(layout="centered", # centers page content, with width set in 
                    ) 
 
 # helper function to load CSS styles
+from pathlib import Path
 def load_css(file_name):
     with open(file_name) as f:
         st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
-load_css("styles.css")
+load_css(str(Path(__file__).parent.resolve() / "styles.css"))
 
 # initialises app with a run_id, which is appended to each widget key, and incremented each time the 'clear filter' button is pressed
 if "run_id" not in st.session_state:
@@ -302,11 +316,27 @@ def sort_by_widget(key_suffix):
 def genre_selection_widget(key_suffix):
     genre_selection = st.multiselect(
         "Select Genres",
-        options=list(genre_name_to_id.keys()),
+        options=sorted(list(genre_name_to_id.keys())),
         # default=['Action', 'Drama'],  # Default genres
         key=f"genre_selection_{key_suffix}{st.session_state["run_id"]}"
     )
     return genre_selection
+
+def region_selection_widget(key_suffix):
+    region_selection = st.selectbox(
+        "Select Region",
+        options=["United Kingdom"] + ["United States"] + sorted(list(region_name_to_id.keys())),
+        key=f"region_selection_{key_suffix}{st.session_state["run_id"]}"
+    )
+    return region_selection
+
+def provider_selection_widget(key_suffix, region):
+    provider_selection = st.multiselect(
+        "Select Watch Providers",
+        options=list(get_provider_map(region=region))[0:25], # passes only first 26 options to selectbox
+        key=f"provider_selection_{key_suffix}{st.session_state["run_id"]}"
+    )
+    return provider_selection
 
 def release_year_widget(key_suffix, current_year=date.today().year):
     release_year = st.slider(
@@ -381,18 +411,32 @@ with movies_tab:
 
         # loads reusable widget components defined in functions earlier, passes 'm' for movie to key parameter, to differentiate from tv shows filters
         m_genre_selection = genre_selection_widget(key_suffix="m")
+        col1a, col1b = st.columns([0.28, 0.72])
+        with col1a:
+            m_region = region_selection_widget('m')
+            m_region_id = region_name_to_id[m_region]
+        with col1b:
+            m_provider = provider_selection_widget('m', region=region_name_to_id[m_region])
+            m_provider_id = []
+            for p in m_provider:
+                m_provider_id.append(str(provider_name_to_id[p])) # adds each id as a string to a list, and then joins into a single string for tmdb searching
+            m_provider_id = "|".join(m_provider_id) # joins using | as OR operator
+            if m_provider_id == []:
+                m_provider_id = None # reset to None if no options selected so no filtering is applied in tmdb function. 
+            
+
         m_sort_by = sort_by_widget("m")
         st.session_state.m_sort_by = m_sort_by
         m_release_year = release_year_widget("m")
 
-        col1a, col1b = st.columns([0.75, 0.25])
-        with col1a:
+        col1c, col1d = st.columns([0.75, 0.25])
+        with col1c:
             m_advanced_options = advanced_options_widget("m", where_to_watch_checkbox=True) # returns dict of options, which are then assigned below
             # m_keyword = m_advanced_options["keyword"]
             # m_people = m_advanced_options["people"]
             m_min_vote_count = m_advanced_options["min_vote_count"]
             m_show_watch_providers = m_advanced_options["show_watch_providers"]
-        with col1b:
+        with col1d:
             st.button("Clear All Filters", icon=':material/filter_alt_off:', key="clear_movie_filters", on_click=clear_widgets)
     
     with col2:
@@ -406,7 +450,9 @@ with movies_tab:
                                     primary_release_date__lte=f"{m_release_year[1]}-12-31",
                                     # keyword=m_keyword,
                                     # people=m_people,
-                                    get_watch_providers=m_show_watch_providers),
+                                    get_watch_providers=m_show_watch_providers,
+                                    watch_region=m_region_id,
+                                    watch_providers=m_provider_id),
                 hide_index=True,
                 height=565,
                 column_config = {
